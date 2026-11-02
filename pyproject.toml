@@ -1,0 +1,13 @@
+name = "ddosguard"
+version = "1.0.0"
+description = "DDoS detection and automated mitigation toolkit"
+authors = ["Buffy <buffy@upstage.ai>"]
+requires-python = ">=3.10"
+dependencies = [
+    # Optional: packet capture backends
+    "scapy>=2.5.0",
+    # Web dashboard
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.30.0",
+    "pyyaml>=6.0.2",
+]

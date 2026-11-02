@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DDoS Mitigation Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; }
+  .time { color: #6b7280; font-size: 0.8rem; }
+  .spark { height: 60px; }
+  .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; }
+  .stage-pill { min-width: 72px; text-align: center; }
+</style>
+</head>
+<body class="p-4">
+  <h1 class="text-2xl font-bold mb-3">DDoS Mitigation Dashboard</h1>
+  <div class="flex gap-4 flex-wrap">
+    <div class="card w-64">
+      <div class="text-sm text-gray-500">Time</div>
+      <div id="now" class="time">--</div>
+      <div class="text-sm text-gray-500 mt-2">Overall score</div>
+      <div id="score" class="text-xl font-bold">--</div>
+      <div class="text-sm text-gray-500 mt-2">Severity</div>
+      <div id="severity" class="text-lg font-bold">--</div>
+    </div>
+    <div class="card w-64">
+      <div class="text-sm text-gray-500">Packet rate (pps)</div>
+      <div id="pkts" class="text-xl font-bold">--</div>
+      <div class="text-sm text-gray-500">Byte rate (B/s)</div>
+      <div id="bytes" class="text-xl font-bold">--</div>
+      <div class="text-sm text-gray-500">Unique sources</div>
+      <div id="sources" class="text-xl font-bold">--</div>
+    </div>
+    <div class="card w-64">
+      <div class="text-sm text-gray-500">Protocol distribution</div>
+      <div id="proto-bar" class="text-xs">--</div>
+      <div class="text-sm text-gray-500 mt-2">Top destination ports</div>
+      <div id="top-ports" class="text-xs">--</div>
+    </div>
+  </div>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+    <div class="card">
+      <div class="text-sm font-semibold mb-2">Traffic timeline (packets/s)</div>
+      <canvas id="timeline" class="w-full h-40"></canvas>
+    </div>
+    <div class="card">
+      <div class="text-sm font-semibold mb-2">Alert timeline</div>
+      <div id="alert-list" class="max-h-64 overflow-auto space-y-1 text-xs"></div>
+    </div>
+  </div>
+  <div class="mt-4 card">
+    <div class="text-sm font-semibold mb-2">Active mitigations</div>
+    <div id="mitigations" class="text-xs"></div>
+  </div>
+  <div class="mt-4 card flex flex-wrap gap-2 items-end">
+    <div class="flex-1">
+      <label class="block text-xs mb-1">Add IP to whitelist</label>
+      <div class="flex gap-2">
+        <input id="ip-input" class="border rounded px-2 py-1 flex-1" placeholder="10.0.0.1">
+        <button id="add-ip" class="bg-emerald-600 hover:bg-emerald-700 text-white rounded px-3 py-1 text-sm">Allow</button>
+      </div>
+    </div>
+    <div class="flex-1">
+      <label class="block text-xs mb-1">Trigger mitigation stage 0..4</label>
+      <div class="flex gap-2">
+        <input id="stage-input" class="border rounded px-2 py-1 w-full" placeholder="stage">
+        <button id="set-stage" class="bg-blue-600 hover:bg-blue-700 text-white rounded px-3 py-1 text-sm">Set</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    const state = {};
+    async function api(path, opts) {
+      const r = await fetch(path, opts);
+      const j = await r.json();
+      return j;
+    }
+    async function refresh() {
+      const [s, stats, alerts, mit, wl] = await Promise.all([
+        api('/api/status'), api('/api/stats'), api('/api/alerts'), api('/api/mitigations'), api('/api/whitelist')
+      ]);
+      document.getElementById('now').textContent = new Date().toLocaleTimeString();
+      document.getElementById('score').textContent = s.overall?.total ?? '--';
+      document.getElementById('severity').textContent = s.overall?.severity ?? '--';
+      document.getElementById('pkts').textContent = (stats.last?.packet_rate ?? '--').toFixed(1);
+      document.getElementById('bytes').textContent = (stats.last?.byte_rate ?? '--').toFixed(0);
+      document.getElementById('sources').textContent = stats.last?.unique_sources ?? '--';
+      document.getElementById('mitigations').textContent = JSON.stringify(mit.actions ?? [], null, 2);
+      const list = document.getElementById('alert-list');
+      list.innerHTML = (alerts.alerts ?? []).slice(-8).reverse().map(a =>
+        `<div class="p-1 ${a.severity === 'CRITICAL' ? 'bg-red-100' : a.severity === 'HIGH' ? 'bg-orange-100' : 'bg-gray-100'} rounded">${a.title} ${a.severity}</div>`
+      ).join('');
+      const t = document.getElementById('timeline');
+      const ctx = t.getContext('2d');
+      ctx.clearRect(0, 0, t.width, t.height);
+      t.width = t.clientWidth;
+      t.height = t.clientHeight;
+      const dpr = window.devicePixelRatio || 1;
+      t.width *= dpr; t.height *= dpr;
+      t.style.width = t.clientWidth + 'px'; t.style.height = t.clientHeight + 'px';
+      const ctx2 = t.getContext('2d');
+      ctx2.scale(dpr, dpr);
+      const w = t.width; const h = t.height;
+      const data = stats.windows ?? [];
+      if (data.length > 1) {
+        ctx2.beginPath();
+        ctx2.strokeStyle = '#2563eb';
+        ctx2.lineWidth = 2;
+        data.forEach((d, i) => {
+          const x = (i / (data.length - 1)) * w;
+          const y = h - (d.packet_rate / 200) * (h - 20) - 10;
+          i === 0 ? ctx2.moveTo(x, y) : ctx2.lineTo(x, y);
+        });
+        ctx2.stroke();
+      }
+    }
+    document.getElementById('add-ip').onclick = async () => {
+      const ip = document.getElementById('ip-input').value.trim();
+      if (!ip) return;
+      await api('/api/whitelist', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ip, reason: 'dashboard'}) });
+      document.getElementById('ip-input').value = '';
+      refresh();
+    };
+    document.getElementById('set-stage').onclick = async () => {
+      const s = parseInt(document.getElementById('stage-input').value, 10);
+      if (Number.isNaN(s)) return;
+      await api('/api/mitigate', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({stage: s}) });
+      refresh();
+    };
+    setInterval(refresh, 2000);
+    refresh();
+  </script>
+</body>
+</html>
