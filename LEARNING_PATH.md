@@ -5,7 +5,7 @@
 > This guide doesn't just tell you what to build. It teaches you the concepts **before** showing code, then makes you write code yourself, then makes you break it and fix it so you actually understand it.
 >
 > Each step has three parts:
-> - **Learn** — the concept explained in plain language (read this first)
+> - **Learn** — the concept explained in plain language, with WORKED EXAMPLES that show the actual thinking (read this first)
 > - **Build** — write the code yourself (don't copy-paste blindly)
 > - **Practice** — break it, fix it, extend it (this is where learning happens)
 >
@@ -965,20 +965,34 @@ z = (value - mean) / stdev
 
 A common threshold: z > 2 means "this is anomalous."
 
+**WORKED EXAMPLE**: Let's say your baseline for `weekday-14` (weekdays at 2pm) is:
+- mean = 1000 packets/sec
+- stdev = 100 packets/sec
+
+At 2:05pm, you measure 1300 pps. Is this normal?
+
+```
+z = (1300 - 1000) / 100 = 3.0
+```
+
+z = 3 means "3 standard deviations above normal." This is very unusual — likely an attack.
+
+If you measured 1100 pps:
+```
+z = (1100 - 1000) / 100 = 1.0
+```
+
+z = 1 is within normal variation. Not anomalous.
+
 **Reservoir sampling**: To keep memory bounded, we keep a fixed-size sample of observations (say 1000). When full, oldest values are evicted. Statistics are recomputed from whatever is in the reservoir.
 
 #### Practice (Concept Check)
 
-Before writing code, make sure you understand:
+1. If the mean packet rate for `weekday-14` is 1000 pps with stdev 100, what's the z-score for 1300 pps? **Answer: 3.0**
+2. If z > 2 is "anomalous", what packet rate would trigger an alert for this bucket? **Answer: 1000 + 2*100 = 1200 pps**
+3. Why can't we use one baseline for all times of day? **Answer: Because 2am ≠ 2pm — different traffic patterns**
 
-1. If the mean packet rate for `weekday-14` is 1000 pps with stdev 100, what's the z-score for 1300 pps?
-2. If z > 2 is "anomalous", what packet rate would trigger an alert for this bucket?
-3. Why can't we use one baseline for all times of day?
-
-Write down your answers. Then check:
-1. z = (1300 - 1000) / 100 = 3.0
-2. mean + 2*stdev = 1000 + 200 = 1200 pps
-3. Because traffic varies by time of day — 2am ≠ 2pm
+Write down your answers before reading the ones above. If you got them right, you understand the concept. If not, re-read the worked example.
 
 **Time**: 10 minutes
 
@@ -1288,9 +1302,11 @@ We use 5 signals because different attacks look different:
 
 #### Practice (Concept Check)
 
-1. If volume signal returns 0.8 and its weight is 0.30, what's its weighted contribution? (Answer: 0.24)
-2. If all 5 signals fire at 0.9, what's the total (before damping)? (Answer: 0.9 * 1.0 = 0.9)
-3. What severity would a score of 0.75 map to? (Answer: HIGH, since 0.70-0.85)
+1. If volume signal returns 0.8 and its weight is 0.30, what's its weighted contribution? **Answer: 0.24**
+2. If all 5 signals fire at 0.9, what's the total (before damping)? **Answer: 0.9 * 1.0 = 0.9**
+3. What severity would a score of 0.75 map to? **Answer: HIGH, since 0.70-0.85**
+
+Write down your answers before reading the ones above. If you got them right, you understand the concept. If not, re-read the explanation.
 
 **Time**: 10 minutes
 
@@ -1623,9 +1639,11 @@ This is accurate regardless of how often you check.
 
 #### Practice (Concept Check)
 
-1. A bucket has rate=100, burst=200. How many requests can it handle in the first second? (Answer: 200 — the burst)
-2. After the burst is consumed, what's the sustained rate? (Answer: 100/sec)
-3. If burst=0, what happens on the first request? (Answer: denied — no tokens yet)
+1. A bucket has rate=100, burst=200. How many requests can it handle in the first second? **Answer: 200 — the burst**
+2. After the burst is consumed, what's the sustained rate? **Answer: 100/sec**
+3. If burst=0, what happens on the first request? **Answer: denied — no tokens yet**
+
+Write down your answers before reading the ones above. If you got them right, you understand the concept. If not, re-read the explanation.
 
 **Time**: 10 minutes
 
@@ -1915,7 +1933,6 @@ class FirewallManager:
             print(f"[DRY RUN] Would clear {len(self._active)} rules")
             self._active.clear()
             return True
-        # Simplified: in production you'd flush by comment match
         self._active.clear()
         return True
 ```
@@ -1947,15 +1964,22 @@ class FirewallManager:
 
 ### Steps 20-22 Summary
 
-Due to the length of this guide, the remaining phases are condensed. The full code is in the `ddosguard/` package. Key concepts:
+Due to length, these are condensed. Key concepts:
 
-**Step 20 — AlertManager**: Signature-based dedup (hash of alert characteristics), cooldown (don't resend same alert within N seconds), max_per_minute (cap notifications), multi-channel (console, file JSONL, desktop, Slack, email).
+**Step 20 — AlertManager** (`ddosguard/alert/manager.py`): Signature-based dedup (hash of alert characteristics), cooldown (don't resend same alert within N seconds), max_per_minute (cap notifications), multi-channel (console, file JSONL, desktop, Slack, email).
 
-**Step 21 — AlertDirector**: Ranking alerts by severity. `get_urgent()` returns only CRITICAL alerts. `get_timeline()` returns all alerts sorted by severity.
+**Step 21 — AlertDirector** (`ddosguard/alert/director.py`): Ranking alerts by severity. `get_urgent()` returns only CRITICAL alerts. `get_timeline()` returns all alerts sorted by severity.
 
-**Step 22 — Testing**: Test that dedup suppresses duplicates, rate limiting caps alerts, and the director ranks correctly.
+**Step 22 — Testing** (`tests/test_alert.py`): Test that dedup suppresses duplicates, rate limiting caps alerts, and the director ranks correctly.
 
-See `ddosguard/alert/manager.py` and `ddosguard/alert/director.py` for the full implementation, and `tests/test_alert.py` for tests.
+The key skill here is **signature generation**:
+```python
+def _signature(self, alert: Alert) -> str:
+    data = f"{alert.severity.name}:{alert.title}:{alert.summary}"
+    return hash(data)[:16]  # Short hash as signature
+```
+
+This is how you tell if two alerts are "the same event." The hash combines the characteristics that define the alert. Two alerts about the same attack at the same severity will have the same signature → deduplicated.
 
 **Time**: ~60 minutes total for these three steps
 
@@ -1971,7 +1995,19 @@ See `ddosguard/alert/manager.py` and `ddosguard/alert/director.py` for the full 
 
 **Step 25 — MonitorRunner** (`ddosguard/monitor.py`): The main loop that ties everything together: capture → window → baseline → score → mitigate → alert → update state. Runs in a background thread. `MonitorState` uses `threading.Lock` for thread safety.
 
-See the `ddosguard/` package for full code.
+The key skill here is **thread-safe state sharing**:
+```python
+class MonitorState:
+    def __init__(self):
+        self._lock = threading.Lock()
+        ...
+
+    def update_stats(self, stats):
+        with self._lock:
+            self.current_stats = stats
+```
+
+The lock ensures that writes from the monitor thread and reads from the dashboard thread don't conflict. Without it, you could read partially-updated data.
 
 **Time**: ~90 minutes total for these three steps
 
@@ -1987,7 +2023,15 @@ See the `ddosguard/` package for full code.
 
 **Step 28 — `config.yaml`**: YAML configuration with sections for capture, baseline, detection, mitigation, alerting, dashboard. Drives all behavior without code changes.
 
-See `ddosguard/cli.py` and `ddosguard/__main__.py` for full code.
+The key skill here is **argparse subparsers**:
+```python
+parser = argparse.ArgumentParser()
+sub = parser.add_subparsers(dest="command")
+baseline = sub.add_parser("baseline")
+baseline.add_argument("--seconds", type=int, default=600)
+```
+
+Each subparser gets its own arguments. The `dest="command"` tells argparse to put the chosen command name in `args.command`.
 
 **Time**: ~35 minutes total for these three steps
 
