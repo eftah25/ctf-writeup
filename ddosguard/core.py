@@ -1,19 +1,19 @@
-"""
-Data model shared across the toolkit.
+"""Data model shared across the toolkit.
 
 Everything that flows through the pipeline is expressed as plain dataclasses so
-it can be unit-tested without touching the network or spawning threads:
+it can be unit-tested without touching the network or spawning threads.
 
-    PacketRecord     - one parsed packet (timestamped, decrypted back to fields)
-    TrafficWindow    - statistics for one fixed-length time window
-    TrafficStats     - window statistics + per-source/port breakdowns
-    BaselineStats    - mean / stdev / percentiles for one metric bucket
-    BaselineStore    - dict[str, BaselineStats] keyed by diurnal bucket
-    SignalResult     - one anomaly indicator (name, score 0..1, detail)
-    CompositeScore   - weighted combination of signals + severity + classification
-    Alert            - notification payload (severity, indicators, mitigation)
-    MitigationAction - one firewall/mitigation rule planned or applied
+PacketRecord     - one parsed packet (timestamped, decrypted back to fields)
+TrafficWindow    - statistics for one fixed-length time window
+TrafficStats     - window statistics + per-source/port breakdowns
+BaselineStats    - mean / stdev / percentiles for one metric bucket
+BaselineStore    - dict[str, BaselineStats] keyed by diurnal bucket
+SignalResult     - one anomaly indicator (name, score 0..1, detail)
+CompositeScore   - weighted combination of signals + severity + classification
+Alert            - notification payload (severity, indicators, mitigation)
+MitigationAction - one firewall/mitigation rule planned or applied
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -21,8 +21,9 @@ from datetime import datetime
 from enum import IntEnum
 from typing import Dict, List, Optional
 
-
-
+# Using IntEnum for protocol so Protocol.TCP == 6 is True (integer comparison)
+# while still providing readable names like Protocol.TCP.
+# This avoids having to remember magic numbers while keeping fast integer comparisons.
 class Protocol(IntEnum):
     OTHER = 0
     TCP = 6
@@ -40,6 +41,9 @@ class Protocol(IntEnum):
             return Protocol.OTHER
 
 
+# Severity levels for detection scoring
+# INFO=1, LOW=2, MEDIUM=3, HIGH=4, CRITICAL=5
+# Order matters for comparison operations below.
 class Severity(IntEnum):
     INFO = 1
     LOW = 2
@@ -51,13 +55,17 @@ class Severity(IntEnum):
     def from_str(name: str) -> "Severity":
         return Severity[name.upper()]
 
-
+# Ordered list from most to least severe for sorting/ranking
 SEVERITY_ORDER = [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.INFO]
 
 
 @dataclass
 class PacketRecord:
-    """A decrypted representation of a packet as seen by the monitor."""
+    """A decrypted representation of a packet as seen by the monitor.
+
+    Using IntEnum for protocol so Protocol.TCP == 6 is True (integer comparison)
+    while still providing readable names like Protocol.TCP.
+    """
 
     ts: datetime
     src_ip: str
@@ -92,7 +100,13 @@ class PacketRecord:
 
 @dataclass
 class TopTalkers:
-    """Top N source IPs and destination ports with counts in a window."""
+    """Top N source IPs and destination ports with counts in a window.
+
+    Using field(default_factory=list) instead of = [] to avoid the mutable default
+    trap: every instance would share the SAME list otherwise (Python evaluates
+    defaults once at class definition time). default_factory creates a new list
+    for each instance.
+    """
 
     src_ips: List[tuple[str, int]] = field(default_factory=list)  # (ip, count)
     dst_ports: List[tuple[int, int]] = field(default_factory=list)  # (port, count)
@@ -112,7 +126,11 @@ class TopTalkers:
 
 @dataclass
 class TrafficWindow:
-    """Aggregated statistics for one fixed-length time window."""
+    """Aggregated statistics for one fixed-length time window.
+
+    Using _seconds property with max(0.001, ...) to prevent division by zero
+    in byte_rate/packet_rate calculations when start == end (single-packet window).
+    """
 
     start: datetime
     end: datetime
@@ -178,6 +196,7 @@ class TrafficWindow:
 
     @property
     def _seconds(self) -> float:
+        """Minimum 0.001s to prevent division by zero in rate calculations."""
         return max(0.001, (self.end.timestamp() - self.start.timestamp()))
 
 
@@ -203,7 +222,12 @@ class TrafficStats:
 
 @dataclass
 class BaselineStats:
-    """Statistics for one metric bucket (e.g. hour 14 on weekdays)."""
+    """Statistics for one metric bucket (e.g. hour 14 on weekdays).
+
+    Using reservoir sampling (pop(0) when len > 1000) to bound memory usage.
+    With thousands of diurnal buckets, unbounded storage would grow indefinitely.
+    FIFO eviction works well when observations arrive in chronological order.
+    """
 
     mean: float = 0.0
     stdev: float = 0.0
@@ -217,12 +241,13 @@ class BaselineStats:
 
     @property
     def cv(self) -> float:
+        """Coefficient of variation = stdev / mean. Returns 0 if mean is 0."""
         return self.stdev / self.mean if self.mean else 0.0
 
     def add(self, value: float) -> None:
         self.samples.append(value)
         if len(self.samples) > 1000:
-            self.samples.pop(0)
+            self.samples.pop(0)  # Cap reservoir at 1000 samples
         self._recompute()
 
     def _recompute(self) -> None:
@@ -230,13 +255,16 @@ class BaselineStats:
             self.mean = self.stdev = self.p5 = self.p25 = self.p75 = self.p95 = self.p99 = 0.0
             self.count = 0
             return
+
         n = len(self.samples)
         self.mean = sum(self.samples) / n
         if n > 1:
+            # Sample stdev uses n-1 (Bessel's correction) for unbiased estimate
             variance = sum((v - self.mean) ** 2 for v in self.samples) / (n - 1)
             self.stdev = variance ** 0.5
         else:
-            self.stdev = 0.0
+            self.stdev = 0.0  # Single observation: stdev is 0/undefined
+
         self.p5 = self._percentile(5)
         self.p25 = self._percentile(25)
         self.p75 = self._percentile(75)
@@ -245,6 +273,12 @@ class BaselineStats:
         self.count = n
 
     def _percentile(self, p: float) -> float:
+        """Linear interpolation between sorted sample values.
+
+        Instead of just returning sorted[int(k)], we interpolate:
+        s[f] + (s[c] - s[f]) * (k - f)
+        for more accurate percentiles with small sample sizes.
+        """
         if not self.samples:
             return 0.0
         s = sorted(self.samples)
@@ -256,10 +290,15 @@ class BaselineStats:
 
 @dataclass
 class SignalResult:
-    """One anomaly indicator reported by a detection signal."""
+    """One anomaly indicator reported by a detection signal.
+
+    detail: Debug/metadata for dashboard display (z-scores, current values, baselines)
+    affected: Specific IPs/ports involved, used for alert payload attack_sources
+    recommended_action: Human-readable next step for operators
+    """
 
     name: str
-    score: float = 0.0  # 0..1
+    score: float = 0.0  # 0..1, clipped before reaching composite scorer
     detail: Dict[str, object] = field(default_factory=dict)
     affected: List[str] = field(default_factory=list)  # IPs/ports/countries
     recommended_action: str = ""
@@ -276,9 +315,16 @@ class SignalResult:
 
 @dataclass
 class CompositeScore:
+    """Weighted combination of detection signals + severity + classification.
+
+    total: 0..1 after clamping max(0.0, min(1.0, weighted_sum)).
+    severity: Mapped from total via _severity_from_score thresholds.
+    classification: e.g. "volumetric", "protocol", "application", "unknown".
+    """
+
     signal_names: List[str] = field(default_factory=list)
     signal_scores: Dict[str, float] = field(default_factory=dict)
-    total: float = 0.0  # 0..1
+    total: float = 0.0  # 0..1, clamped after weighted sum
     severity: Severity = Severity.INFO
     classification: str = "unknown"
     window: Optional[TrafficStats] = None
@@ -296,7 +342,12 @@ class CompositeScore:
 
 @dataclass
 class Alert:
-    """A single notification payload delivered to administrators."""
+    """A single notification payload delivered to administrators.
+
+    window: The TrafficStats that triggered this alert (for dashboard display).
+    occurred_at: When the alert was created (for timeline ordering, dedup timing).
+    These are separate: window = "what traffic", occurred_at = "when detected".
+    """
 
     alert_id: str
     severity: Severity
@@ -338,7 +389,14 @@ class WhitelistedIp:
 
 @dataclass
 class MitigationAction:
-    """One firewall/mitigation rule planned or applied."""
+    """One firewall/mitigation rule planned or applied.
+
+    rule_type: "rate_limit" | "block" | "redirect"
+    target: ip or port
+    action: "allow" | "deny"
+    severity: corresponds to the detection severity that triggered this
+    applied_at: None when planned, set when actually applied to iptables
+    """
 
     id: str
     rule_type: str  # "rate_limit" | "block" | "redirect"
